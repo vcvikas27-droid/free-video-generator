@@ -1542,7 +1542,8 @@ async def cleanup_regression():
 if __name__ == "__main__":
     import uvicorn
 
-    config = uvicorn.Config(app, host="0.0.0.0", port=8765, log_level="info")
+    port = int(os.environ.get("PORT", "8765"))
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
 
     original_handle_exit = server.handle_exit
