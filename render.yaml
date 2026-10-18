@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: free-video-generator
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: AGNES_API_KEY
+        sync: false
