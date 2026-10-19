@@ -371,8 +371,8 @@ async def create_daily_automation_task(authorization: Optional[str] = Header(Non
         "concept and style fields. Create a family-friendly, original, visually "
         "engaging short video idea suitable for YouTube Shorts. Avoid copyrighted "
         "characters, real-person impersonation, politics, medical claims, and "
-        "dangerous instructions. Write the concept and style in simple Chinese "
-        "because this generator's bundled narration voices are Chinese."
+        "dangerous instructions. Write the concept and style in simple Hindi "
+        "for an Indian audience."
     )
     user_prompt = f"Create one fresh 3-scene YouTube Shorts idea for {today}. Avoid repeating generic topics."
     try:
