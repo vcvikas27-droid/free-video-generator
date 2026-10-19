@@ -234,8 +234,9 @@ class AgnesVideoAPI:
                 resp = await asyncio.wait_for(
                     asyncio.to_thread(
                         requests.get,
-                        f"{API_ROOT}/agnesapi?video_id={video_id}",
+                        f"{API_ROOT}/agnesapi",
                         headers=self.headers,
+                        params={"video_id": video_id, "model_name": self.model},
                         timeout=15,
                     ),
                     timeout=30,
@@ -394,39 +395,50 @@ class AgnesVideoAPI:
         negative_prompt: Optional[str] = None,
         **kwargs,
     ) -> str:
-        num_frames, frame_rate = self._get_frame_config(duration, width, height)
+        # Agnes Video 2.5 uses the modern schema; legacy width/height/num_frames
+        # fields are forbidden. Keep requested durations within the documented 4–12s range.
+        requested_duration = int(duration or self.default_duration)
+        seconds = str(max(4, min(12, requested_duration)))
+
+        ratio = width / max(height, 1)
+        if height > width:
+            aspect_ratio = "9:16" if ratio < 0.70 else "3:4"
+        elif 0.90 <= ratio <= 1.10:
+            aspect_ratio = "1:1"
+        elif ratio >= 1.60:
+            aspect_ratio = "16:9"
+        else:
+            aspect_ratio = "4:3"
 
         payload: dict = {
             "model": self.model,
             "prompt": prompt,
-            "width": width,
-            "height": height,
-            "num_frames": num_frames,
-            "frame_rate": frame_rate,
+            "mode": "text",
+            "seconds": seconds,
+            "size": "720P",
+            "aspect_ratio": aspect_ratio,
+            "n": 1,
         }
 
         if seed is not None:
             payload["seed"] = seed
-        if negative_prompt:
-            payload["negative_prompt"] = negative_prompt
 
         resolved_refs = []
         for p in reference_image_paths:
             resolved_refs.append(await self._resolve_image_ref(p))
         n_refs = len(resolved_refs)
 
-        if n_refs == 0:
-            mode_desc = "text-to-video"
-        elif n_refs == 1:
-            payload["image"] = resolved_refs[0]
-            payload["mode"] = "ti2vid"
+        if n_refs == 1:
+            payload["mode"] = "img2video"
+            payload["first_frame"] = resolved_refs[0]
             mode_desc = "image-to-video"
+        elif n_refs >= 2:
+            payload["mode"] = "keyframe"
+            payload["first_frame"] = resolved_refs[0]
+            payload["last_frame"] = resolved_refs[-1]
+            mode_desc = f"keyframe video ({n_refs} reference frames)"
         else:
-            payload["extra_body"] = {
-                "image": resolved_refs,
-                "mode": "keyframes",
-            }
-            mode_desc = f"keyframes ({n_refs} frames)"
+            mode_desc = "text-to-video"
 
         logger.info(f"[AgnesVideo] {mode_desc}: {prompt[:80]}...")
 
@@ -442,6 +454,10 @@ class AgnesVideoAPI:
             or final.get("video_url")
             or final.get("url")
         )
+        if not video_url:
+            metadata = final.get("metadata", {})
+            if isinstance(metadata, dict):
+                video_url = metadata.get("url") or metadata.get("video_url")
         if not video_url:
             data = final.get("data", {})
             if isinstance(data, dict):
