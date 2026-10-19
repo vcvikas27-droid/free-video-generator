@@ -8,3 +8,5 @@ services:
     envVars:
       - key: AGNES_API_KEY
         sync: false
+      - key: AUTOMATION_SECRET
+        sync: false
