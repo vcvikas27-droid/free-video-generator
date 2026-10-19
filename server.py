@@ -14,6 +14,7 @@ resume 端点根据 task_type 自动选择对应的 Pipeline。
 import asyncio
 import base64
 import json
+import hmac
 import logging
 import os
 import platform
@@ -27,7 +28,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, List, Optional, Union
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Header, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -347,7 +348,7 @@ async def save_watermark_config(enabled: bool = Form(False)):
 
 
 @app.post("/api/automation/daily")
-async def create_daily_automation_task(authorization: Optional[str] = None):
+async def create_daily_automation_task(authorization: Optional[str] = Header(None)):
     """Protected entry point for a scheduled daily video-generation task."""
     expected_secret = os.environ.get("AUTOMATION_SECRET", "").strip()
     if not expected_secret:
