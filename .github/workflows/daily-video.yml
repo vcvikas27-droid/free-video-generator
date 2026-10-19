@@ -1,0 +1,37 @@
+name: Daily AI Video Generation
+
+on:
+  schedule:
+    # 19:00 India Standard Time (UTC+05:30) = 13:30 UTC
+    - cron: "30 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-ai-video
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check required secret
+        env:
+          AUTOMATION_SECRET: ${{ secrets.AUTOMATION_SECRET }}
+        run: |
+          if [ -z "$AUTOMATION_SECRET" ]; then
+            echo "::error::Add the AUTOMATION_SECRET repository secret before running this workflow."
+            exit 1
+          fi
+      - name: Start daily video generation
+        env:
+          AUTOMATION_SECRET: ${{ secrets.AUTOMATION_SECRET }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            --retry 2 --retry-delay 10 \
+            --request POST \
+            --header "Authorization: Bearer $AUTOMATION_SECRET" \
+            "https://free-video-generator-52ha.onrender.com/api/automation/daily"
