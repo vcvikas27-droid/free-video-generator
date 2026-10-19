@@ -346,6 +346,80 @@ async def save_watermark_config(enabled: bool = Form(False)):
 # ═══════════════════════════════════════════════════
 
 
+@app.post("/api/automation/daily")
+async def create_daily_automation_task(authorization: Optional[str] = None):
+    """Protected entry point for a scheduled daily video-generation task."""
+    expected_secret = os.environ.get("AUTOMATION_SECRET", "").strip()
+    if not expected_secret:
+        raise HTTPException(status_code=503, detail="Daily automation is not configured")
+    supplied_secret = (authorization or "").strip()
+    # GitHub Actions sends the shared secret in the Authorization header.
+    if supplied_secret.lower().startswith("bearer "):
+        supplied_secret = supplied_secret[7:].strip()
+    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    api_key = get_api_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Agnes API key is not configured")
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    client = AgnesChatAPI(api_key)
+    system_prompt = (
+        "You are a short-form video producer. Return only a JSON object with "
+        "concept and style fields. Create a family-friendly, original, visually "
+        "engaging short video idea suitable for YouTube Shorts. Avoid copyrighted "
+        "characters, real-person impersonation, politics, medical claims, and "
+        "dangerous instructions. Write the concept and style in simple Chinese "
+        "because this generator's bundled narration voices are Chinese."
+    )
+    user_prompt = f"Create one fresh 3-scene YouTube Shorts idea for {today}. Avoid repeating generic topics."
+    try:
+        idea = client.chat_json(system_prompt, user_prompt, max_tokens=2048)
+        concept = str(idea.get("concept", "")).strip()
+        style = str(idea.get("style", "")).strip()
+        if not concept or not style:
+            raise ValueError("AI returned an empty concept or style")
+        result = await create_creative_task(
+            idea=concept,
+            creative_name=f"Daily YouTube Short {today}",
+            style=style,
+            negative_prompt="watermark, text artifacts, distorted anatomy, low quality",
+            include_characters=True,
+            chaining_mode="keyframes",
+            video_width=768,
+            video_height=1152,
+            duration_source="manual",
+            scene_count=3,
+            uniform_duration=True,
+            scene_durations_json="[5,5,5]",
+            reference_image=None,
+            end_frame_images=None,
+            use_custom_end_frames=False,
+            generate_end_frames_from_ref=True,
+            audio_enabled=True,
+            audio_voice="zh-CN-XiaoxiaoNeural",
+            audio_rate="+0%",
+            subtitle_enabled=True,
+            subtitle_style_mode="fixed",
+            subtitle_style_hints="",
+            subtitle_font="STHeitiMedium.ttc",
+            subtitle_color="white",
+            subtitle_fontsize=48,
+            subtitle_position="bottom",
+            subtitle_stroke_color="black",
+            subtitle_stroke_width=2,
+            subtitle_bg_color="black@0.5",
+        )
+        return {"ok": True, "scheduled_date": today, "task": result,
+                "note": "Video generation started; YouTube upload is not implemented yet."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Daily automation task creation failed")
+        raise HTTPException(status_code=500, detail=f"Daily task creation failed: {type(e).__name__}")
+
+
 @app.post("/api/ideas/generate")
 async def generate_ideas(keyword: str = Form(...)):
     """使用 Agnes LLM 根据关键词生成创意概念和视觉风格建议。"""
