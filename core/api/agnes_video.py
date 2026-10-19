@@ -279,9 +279,8 @@ class AgnesVideoAPI:
                 raise RuntimeError("Video generation cancelled by user")
             try:
                 logger.info(f"[AgnesVideo] Submitting {mode_desc} (attempt {attempt + 1}/{self.max_retries})...")
-                # 全局限速：在发起提交请求前获取令牌
+                # Global rate limiter: acquire a token before submitting.
                 await asyncio.to_thread(get_rate_limiter().acquire)
-                # M2: 缩短读超时从 180s 到 60s，使 stop() 更快生效
                 resp = await asyncio.wait_for(
                     asyncio.to_thread(
                         requests.post,
@@ -298,27 +297,32 @@ class AgnesVideoAPI:
                     video_id = result.get("video_id") or result.get("task_id") or result.get("id")
                     if video_id:
                         return video_id
-
-                if resp.status_code == 429:
-                    delay = self.retry_base_delay * (attempt + 1)
-                    logger.warning(
-                        f"[AgnesVideo] 429 rate limit on {mode_desc}, "
-                        f"retry {attempt + 1}/{self.max_retries} in {delay:.0f}s..."
+                    raise RuntimeError(
+                        f"Agnes video submit returned HTTP 200 without a task ID: {resp.text[:500]}"
                     )
-                    await asyncio.sleep(delay)
-                    continue
 
-                if resp.status_code >= 500:
-                    delay = self.retry_base_delay * (attempt + 1)
-                    logger.warning(
-                        f"[AgnesVideo] {resp.status_code} server error on {mode_desc}, "
-                        f"retry {attempt + 1}/{self.max_retries} in {delay:.0f}s..."
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-
-                # HTTP 400 with num_frames exceeded → reduce frames and retry
                 error_text = resp.text[:500]
+                retryable = resp.status_code == 429 or resp.status_code >= 500
+
+                if retryable:
+                    if attempt >= self.max_retries - 1:
+                        logger.error(
+                            f"[AgnesVideo] Final attempt failed for {mode_desc}: "
+                            f"HTTP {resp.status_code}: {error_text}"
+                        )
+                        break
+                    # Cap the delay to avoid a very long wait while still giving
+                    # the upstream queue time to recover. Never sleep after the last attempt.
+                    delay = min(self.retry_base_delay * (attempt + 1), 120)
+                    logger.warning(
+                        f"[AgnesVideo] HTTP {resp.status_code} on {mode_desc}, "
+                        f"retry {attempt + 1}/{self.max_retries} in {delay:.0f}s; "
+                        f"response: {error_text}"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                # HTTP 400 with num_frames exceeded -> reduce frames and retry.
                 if (resp.status_code == 400
                         and "num_frames" in error_text
                         and frame_reductions_left > 0):
@@ -334,16 +338,22 @@ class AgnesVideoAPI:
                     continue
 
                 logger.error(f"[AgnesVideo] HTTP {resp.status_code}: {error_text}")
-                raise RuntimeError(f"Agnes video submit failed (HTTP {resp.status_code}): {error_text}")
+                raise RuntimeError(
+                    f"Agnes video submit failed (HTTP {resp.status_code}): {error_text}"
+                )
 
-            except (requests.exceptions.Timeout, asyncio.TimeoutError):
-                delay = self.retry_base_delay * (attempt + 1)
+            except (requests.exceptions.Timeout, asyncio.TimeoutError) as e:
+                if attempt >= self.max_retries - 1:
+                    logger.error(
+                        f"[AgnesVideo] Final timeout for {mode_desc}: {e}"
+                    )
+                    break
+                delay = min(self.retry_base_delay * (attempt + 1), 120)
                 logger.warning(
                     f"[AgnesVideo] Timeout on {mode_desc}, "
-                    f"retry {attempt + 1}/{self.max_retries} in {delay:.0f}s..."
+                    f"retry {attempt + 1}/{self.max_retries} in {delay:.0f}s: {e}"
                 )
                 await asyncio.sleep(delay)
-                continue
 
         raise RuntimeError(
             f"[AgnesVideo] {mode_desc}: max retries ({self.max_retries}) exceeded"
