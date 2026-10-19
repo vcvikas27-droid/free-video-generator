@@ -275,11 +275,17 @@ class AgnesVideoAPI:
 
     async def _submit_with_retry(self, payload: dict, mode_desc: str) -> str:
         frame_reductions_left = 2  # allow up to 2 frame-count reductions on 400
-        for attempt in range(self.max_retries):
+        # Agnes' free Flash queue can stay saturated for 10+ minutes. Extend
+        # retries only for this explicit upstream capacity response; keep the
+        # normal retry budget for other errors.
+        attempt = 0
+        max_attempts = self.max_retries
+        while attempt < max_attempts:
             if self.shutdown_event and self.shutdown_event.is_set():
                 raise RuntimeError("Video generation cancelled by user")
+            attempt += 1
             try:
-                logger.info(f"[AgnesVideo] Submitting {mode_desc} (attempt {attempt + 1}/{self.max_retries})...")
+                logger.info(f"[AgnesVideo] Submitting {mode_desc} (attempt {attempt}/{max_attempts})...")
                 # Global rate limiter: acquire a token before submitting.
                 await asyncio.to_thread(get_rate_limiter().acquire)
                 resp = await asyncio.wait_for(
@@ -306,7 +312,10 @@ class AgnesVideoAPI:
                 retryable = resp.status_code == 429 or resp.status_code >= 500
 
                 if retryable:
-                    if attempt >= self.max_retries - 1:
+                    queue_full = "video_queue_full" in error_text.lower()
+                    if queue_full:
+                        max_attempts = max(max_attempts, 15)
+                    if attempt >= max_attempts:
                         logger.error(
                             f"[AgnesVideo] Final attempt failed for {mode_desc}: "
                             f"HTTP {resp.status_code}: {error_text}"
@@ -314,10 +323,10 @@ class AgnesVideoAPI:
                         break
                     # Cap the delay to avoid a very long wait while still giving
                     # the upstream queue time to recover. Never sleep after the last attempt.
-                    delay = min(self.retry_base_delay * (attempt + 1), 120)
+                    delay = min(self.retry_base_delay * attempt, 120)
                     logger.warning(
                         f"[AgnesVideo] HTTP {resp.status_code} on {mode_desc}, "
-                        f"retry {attempt + 1}/{self.max_retries} in {delay:.0f}s; "
+                        f"retry {attempt}/{max_attempts} in {delay:.0f}s; "
                         f"response: {error_text}"
                     )
                     await asyncio.sleep(delay)
@@ -344,7 +353,7 @@ class AgnesVideoAPI:
                 )
 
             except (requests.exceptions.Timeout, asyncio.TimeoutError) as e:
-                if attempt >= self.max_retries - 1:
+                if attempt >= max_attempts:
                     logger.error(
                         f"[AgnesVideo] Final timeout for {mode_desc}: {e}"
                     )
@@ -352,12 +361,12 @@ class AgnesVideoAPI:
                 delay = min(self.retry_base_delay * (attempt + 1), 120)
                 logger.warning(
                     f"[AgnesVideo] Timeout on {mode_desc}, "
-                    f"retry {attempt + 1}/{self.max_retries} in {delay:.0f}s: {e}"
+                    f"retry {attempt}/{max_attempts} in {delay:.0f}s: {e}"
                 )
                 await asyncio.sleep(delay)
 
         raise RuntimeError(
-            f"[AgnesVideo] {mode_desc}: max retries ({self.max_retries}) exceeded"
+            f"[AgnesVideo] {mode_desc}: max retries ({max_attempts}) exceeded"
         )
 
     async def generate_single_video(
